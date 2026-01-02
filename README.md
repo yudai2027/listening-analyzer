@@ -35,7 +35,11 @@ Ankiでの英語学習にAI（Gemini）の言語学的分析を加え、その�
 
 ​3. Notion側で以下のプロパティを持つデータベースを作成してください。
 ・​English study: タイトル型
+
 ​・日本語訳: テキスト型
+
 ​・日付: 日付型
+
 ​・エラーカテゴリ: マルチセレクト型 (Liaison, Flapping, Vocabulary, Grammar, Speed)
+
 ・​分析: テキスト型
