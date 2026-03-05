@@ -25,7 +25,9 @@ if [ ! -d "$ADDON_DIR" ]; then
 fi
 
 cp "$SCRIPT_DIR/__init__.py" "$ADDON_DIR/__init__.py"
-cp "$SCRIPT_DIR/config.json" "$ADDON_DIR/config.json" 2>/dev/null
+if [ -f "$SCRIPT_DIR/config.json" ]; then
+    cp "$SCRIPT_DIR/config.json" "$ADDON_DIR/config.json"
+fi
 
 echo "Deployed to $ADDON_DIR"
 echo "Restart Anki to apply changes."
