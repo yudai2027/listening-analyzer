@@ -27,19 +27,23 @@ def clean_text(text):
     text = re.sub(r"<.*?>", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
-def map_category(raw_category):
-    """Map AI-generated category to one of the 5 predefined labels for Notion consistency."""
+def map_categories(raw_categories):
+    """Map AI-generated categories to predefined labels for Notion multi-select."""
     valid_categories = ["Liaison", "Flapping", "Vocabulary", "Grammar", "Speed"]
-    cat_str = str(raw_category).lower()
-    for valid in valid_categories:
-        if valid.lower() in cat_str:
-            return valid
-    return "Vocabulary"
+    if not isinstance(raw_categories, list):
+        raw_categories = [raw_categories]
+    mapped = []
+    for raw in raw_categories:
+        cat_str = str(raw).lower()
+        for valid in valid_categories:
+            if valid.lower() in cat_str and valid not in mapped:
+                mapped.append(valid)
+    return mapped if mapped else ["Vocabulary"]
 
 def analyze_with_gemini(text, retry=True):
     """Analyze the English sentence using Gemini API for linguistic listening barriers."""
     if not GEMINI_API_KEY:
-        return {"category": "Error", "analysis": "Gemini API Key is missing in config."}
+        return {"categories": ["Error"], "analysis": "Gemini API Key is missing in config."}
         
     model_id = "models/gemini-flash-latest"
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_id}:generateContent?key={GEMINI_API_KEY}"
@@ -49,7 +53,8 @@ def analyze_with_gemini(text, retry=True):
         f"Target English Phrase: '{text}'\n\n"
         "Task: Analyze why a Japanese speaker might struggle to catch this phrase aurally.\n"
         "Constraints: 1. NO meaning/topic explanation. 2. Output ONLY JSON.\n"
-        "JSON Format: {\"category\": \"...\", \"analysis_ja\": \"...\"}"
+        "JSON Format: {\"category\": [\"...\", \"...\"], \"analysis_ja\": \"...\"}\n"
+        "category must be an array of one or more values from: Liaison, Flapping, Vocabulary, Grammar, Speed."
     )
     
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -63,15 +68,15 @@ def analyze_with_gemini(text, retry=True):
             start, end = content.find('{'), content.rfind('}')
             if start != -1 and end != -1:
                 res_json = json.loads(content[start:end+1])
-                return {"category": map_category(res_json.get('category')), "analysis": res_json.get('analysis_ja')}
-            return {"category": "Error", "analysis": "Failed to parse AI response."}
+                return {"categories": map_categories(res_json.get('category')), "analysis": res_json.get('analysis_ja')}
+            return {"categories": ["Error"], "analysis": "Failed to parse AI response."}
     except urllib.error.HTTPError as e:
-        if e.code == 429 and retry:
+        if e.code in (429, 503) and retry:
             time.sleep(3)
             return analyze_with_gemini(text, retry=False)
-        return {"category": "Error", "analysis": f"API Error {e.code}"}
+        return {"categories": ["Error"], "analysis": f"API Error {e.code}"}
     except Exception as e:
-        return {"category": "Error", "analysis": str(e)}
+        return {"categories": ["Error"], "analysis": str(e)}
 
 def push_to_notion(note):
     """Assemble data and send a POST request to the Notion API."""
@@ -103,7 +108,7 @@ def push_to_notion(note):
             "English study": {"title": [{"text": {"content": eng_text}}]},
             "日本語訳": {"rich_text": [{"text": {"content": ja_translation}}]},
             "日付": {"date": {"start": datetime.date.today().isoformat()}},
-            "エラーカテゴリ": {"multi_select": [{"name": str(analysis_result.get('category'))}]},
+            "エラーカテゴリ": {"multi_select": [{"name": c} for c in analysis_result.get('categories', [])]},
             "分析": {"rich_text": [{"text": {"content": str(analysis_result.get('analysis'))}}]}
         }
     }
