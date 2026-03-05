@@ -332,6 +332,15 @@ def _auto_git_pull():
     if not os.path.isdir(os.path.join(addon_dir, ".git")):
         return
     try:
+        # Record current commit before pull
+        before = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=addon_dir,
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        )
+        old_hash = before.stdout.strip() if before.returncode == 0 else ""
+
         result = subprocess.run(
             ["git", "pull", "--ff-only"],
             cwd=addon_dir,
@@ -346,6 +355,18 @@ def _auto_git_pull():
                 capture_output=True, text=True, timeout=15,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             )
+
+        # Check if commit changed after pull
+        after = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=addon_dir,
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        )
+        new_hash = after.stdout.strip() if after.returncode == 0 else ""
+
+        if old_hash and new_hash and old_hash != new_hash:
+            showInfo("アドオンが更新されました。\nAnkiを再起動すると反映されます。")
     except Exception:
         pass  # Network error etc. -> use existing code
 
