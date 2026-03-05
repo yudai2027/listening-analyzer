@@ -273,7 +273,9 @@ def retry_gemini_for_errors():
     fail_count = 0
     fixed_titles = set()
 
-    for title, info in error_pages.items():
+    for i, (title, info) in enumerate(error_pages.items()):
+        if i > 0:
+            time.sleep(4)  # Rate limit: wait between Gemini API calls
         analysis_result = analyze_with_gemini(title)
         if "Error" in analysis_result.get("categories", []):
             fail_count += 1
