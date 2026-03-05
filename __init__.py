@@ -249,3 +249,9 @@ def _auto_git_pull():
         pass  # Network error etc. -> use existing code
 
 gui_hooks.main_window_did_init.append(_auto_git_pull)
+
+# --- Deploy confirmation (remove after verifying) ---
+def _deploy_check():
+    showInfo("Deploy確認: アドオンが正常に読み込まれました。\nこのメッセージが表示されたらデプロイ成功です。")
+
+gui_hooks.main_window_did_init.append(_deploy_check)
