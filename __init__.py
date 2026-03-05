@@ -23,6 +23,7 @@ FIELD_TRANSLATION = config.get("FIELD_TRANSLATION", "")
 
 TAG_ERROR = "notion_error"
 TAG_MISSING = "notion_missing"
+TAG_ERROR_ANALYSIS = "notion_error_analysis"
 
 def clean_text(text):
     """Remove HTML tags, sound tags, and normalize whitespaces."""
@@ -130,9 +131,9 @@ def push_to_notion(note):
 
 # --- Notion comparison feature ---
 
-def fetch_notion_titles():
-    """Fetch all 'English study' titles from the Notion database."""
-    titles = set()
+def fetch_notion_pages():
+    """Fetch all pages from the Notion database with titles, page IDs, and error status."""
+    pages = {}  # {title: {"page_id": str, "has_error": bool}}
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -152,21 +153,28 @@ def fetch_notion_titles():
             result = json.loads(res.read().decode("utf-8"))
         for page in result.get("results", []):
             title_prop = page.get("properties", {}).get("English study", {}).get("title", [])
-            if title_prop:
-                titles.add(title_prop[0].get("text", {}).get("content", ""))
+            if not title_prop:
+                continue
+            title = title_prop[0].get("text", {}).get("content", "")
+            categories = page.get("properties", {}).get("エラーカテゴリ", {}).get("multi_select", [])
+            cat_names = [c.get("name", "") for c in categories]
+            pages[title] = {
+                "page_id": page.get("id", ""),
+                "has_error": "Error" in cat_names
+            }
         has_more = result.get("has_more", False)
         start_cursor = result.get("next_cursor")
 
-    return titles
+    return pages
 
 def sync_check_with_notion():
-    """Compare Anki notes with Notion DB and tag missing ones."""
+    """Compare Anki notes with Notion DB and tag missing/error ones."""
     if not NOTION_TOKEN or not DATABASE_ID or not TARGET_NOTE_TYPE:
         showInfo("設定が不足しています（NOTION_TOKEN, DATABASE_ID, TARGET_NOTE_TYPE）")
         return
 
     try:
-        notion_titles = fetch_notion_titles()
+        notion_pages = fetch_notion_pages()
     except Exception as e:
         showInfo(f"Notion取得エラー: {e}")
         return
@@ -184,6 +192,7 @@ def sync_check_with_notion():
     note_ids = mw.col.find_notes(f'"note:{TARGET_NOTE_TYPE}"')
     missing_count = 0
     found_count = 0
+    error_analysis_count = 0
 
     for nid in note_ids:
         note = mw.col.get_note(nid)
@@ -193,7 +202,7 @@ def sync_check_with_notion():
         if not eng_text:
             continue
 
-        if eng_text not in notion_titles:
+        if eng_text not in notion_pages:
             if not note.has_tag(TAG_MISSING):
                 note.add_tag(TAG_MISSING)
                 note.flush()
@@ -203,19 +212,111 @@ def sync_check_with_notion():
             if note.has_tag(TAG_MISSING):
                 note.remove_tag(TAG_MISSING)
                 note.flush()
-            found_count += 1
+
+            # Check if Gemini analysis failed (Error category)
+            page_info = notion_pages[eng_text]
+            if page_info["has_error"]:
+                if not note.has_tag(TAG_ERROR_ANALYSIS):
+                    note.add_tag(TAG_ERROR_ANALYSIS)
+                    note.flush()
+                error_analysis_count += 1
+            else:
+                if note.has_tag(TAG_ERROR_ANALYSIS):
+                    note.remove_tag(TAG_ERROR_ANALYSIS)
+                    note.flush()
+                found_count += 1
 
     showInfo(
         f"比較完了\n\n"
-        f"Notion登録済み: {found_count} 件\n"
+        f"Notion登録済み (正常): {found_count} 件\n"
+        f"Notion登録済み (分析エラー, タグ '{TAG_ERROR_ANALYSIS}' 付与): {error_analysis_count} 件\n"
         f"Notion未登録 (タグ '{TAG_MISSING}' 付与): {missing_count} 件\n\n"
-        f"ブラウザで tag:{TAG_MISSING} を検索してください"
+        f"ブラウザで tag:{TAG_ERROR_ANALYSIS} または tag:{TAG_MISSING} を検索してください"
+    )
+
+def update_notion_page(page_id, analysis_result):
+    """Update an existing Notion page with new Gemini analysis results via PATCH."""
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    data = {
+        "properties": {
+            "エラーカテゴリ": {"multi_select": [{"name": c} for c in analysis_result.get('categories', [])]},
+            "分析": {"rich_text": [{"text": {"content": str(analysis_result.get('analysis'))}}]}
+        }
+    }
+    url = f"https://api.notion.com/v1/pages/{page_id}"
+    req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers, method="PATCH")
+    with urllib.request.urlopen(req) as res:
+        pass
+
+def retry_gemini_for_errors():
+    """Re-run Gemini analysis for all Notion pages with Error category and update them."""
+    if not NOTION_TOKEN or not DATABASE_ID or not GEMINI_API_KEY:
+        showInfo("設定が不足しています（NOTION_TOKEN, DATABASE_ID, GEMINI_API_KEY）")
+        return
+
+    try:
+        notion_pages = fetch_notion_pages()
+    except Exception as e:
+        showInfo(f"Notion取得エラー: {e}")
+        return
+
+    error_pages = {title: info for title, info in notion_pages.items() if info["has_error"]}
+    if not error_pages:
+        showInfo("分析エラーのページはありません。")
+        return
+
+    success_count = 0
+    fail_count = 0
+    fixed_titles = set()
+
+    for i, (title, info) in enumerate(error_pages.items()):
+        if i > 0:
+            time.sleep(4)  # Rate limit: wait between Gemini API calls
+        analysis_result = analyze_with_gemini(title)
+        if "Error" in analysis_result.get("categories", []):
+            fail_count += 1
+            continue
+        try:
+            update_notion_page(info["page_id"], analysis_result)
+            success_count += 1
+            fixed_titles.add(title)
+        except Exception as e:
+            print(f"Notion update error for '{title}': {e}")
+            fail_count += 1
+
+    # Remove notion_error_analysis tags from Anki notes that were fixed
+    if fixed_titles and TARGET_NOTE_TYPE:
+        note_ids = mw.col.find_notes(f'"note:{TARGET_NOTE_TYPE}" tag:{TAG_ERROR_ANALYSIS}')
+        for nid in note_ids:
+            note = mw.col.get_note(nid)
+            if FIELD_SENTENCE not in note:
+                continue
+            eng_text = clean_text(note[FIELD_SENTENCE])
+            if eng_text in fixed_titles:
+                note.remove_tag(TAG_ERROR_ANALYSIS)
+                note.flush()
+
+    showInfo(
+        f"Gemini再分析完了\n\n"
+        f"対象: {len(error_pages)} 件\n"
+        f"成功（Notion更新済み）: {success_count} 件\n"
+        f"失敗: {fail_count} 件\n\n"
+        f"成功分はNotionの分析とカテゴリが更新されました。\n"
+        f"「Notion同期チェック」を再実行するとタグも更新されます。"
     )
 
 # --- Menu setup ---
 action = QAction("Notion同期チェック", mw)
 action.triggered.connect(sync_check_with_notion)
 mw.form.menuTools.addAction(action)
+
+action_retry = QAction("Gemini再分析（エラー修正）", mw)
+action_retry.triggered.connect(retry_gemini_for_errors)
+mw.form.menuTools.addAction(action_retry)
 
 # --- Hook ---
 def on_note_added(note):
