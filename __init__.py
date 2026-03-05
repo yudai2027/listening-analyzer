@@ -222,3 +222,9 @@ def on_note_added(note):
         push_to_notion(note)
 
 gui_hooks.add_cards_did_add_note.append(on_note_added)
+
+# --- Deploy confirmation (remove after verifying) ---
+def _deploy_check():
+    showInfo("Deploy確認: アドオンが正常に読み込まれました。\nこのメッセージが表示されたらデプロイ成功です。\n\n確認後、__init__.py の末尾にある _deploy_check 関連コードを削除してください。")
+
+gui_hooks.main_window_did_init.append(_deploy_check)
