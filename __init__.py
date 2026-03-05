@@ -5,6 +5,8 @@ import urllib.error
 import re
 import html
 import time
+import subprocess
+import os
 from aqt import mw, gui_hooks
 from aqt.utils import showInfo
 from aqt.qt import QAction
@@ -223,8 +225,27 @@ def on_note_added(note):
 
 gui_hooks.add_cards_did_add_note.append(on_note_added)
 
-# --- Deploy confirmation (remove after verifying) ---
-def _deploy_check():
-    showInfo("Deploy確認: アドオンが正常に読み込まれました。\nこのメッセージが表示されたらデプロイ成功です。\n\n確認後、__init__.py の末尾にある _deploy_check 関連コードを削除してください。")
+# --- Auto git pull on startup ---
+def _auto_git_pull():
+    addon_dir = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.isdir(os.path.join(addon_dir, ".git")):
+        return
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=addon_dir,
+            capture_output=True, text=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        )
+        if result.returncode != 0:
+            # ff-only failed (conflict etc.) -> force sync to remote
+            subprocess.run(
+                ["git", "reset", "--hard", "origin/main"],
+                cwd=addon_dir,
+                capture_output=True, text=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            )
+    except Exception:
+        pass  # Network error etc. -> use existing code
 
-gui_hooks.main_window_did_init.append(_deploy_check)
+gui_hooks.main_window_did_init.append(_auto_git_pull)
